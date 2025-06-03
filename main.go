@@ -22,6 +22,20 @@ type flags struct {
 	outputDir     string
 }
 
+func parseFlags() flags {
+	var fl flags
+
+	flag.IntVar(&fl.concurrency, "concurrency", 10, "Количество потоков для конкурентной записи файлов")
+	flag.IntVar(&fl.files, "files", 10, "Количество файлов для записи")
+	flag.IntVar(&fl.iterations, "iterations", 1, "Количество итераций перезаписи каждого файла")
+	flag.DurationVar(&fl.fileTimeout, "file-timeout", -1, "Таймаут на перезапись отдельного файла")
+	flag.DurationVar(&fl.globalTimeout, "global-timeout", -1, "Таймаут на перезапись всех файлов")
+	flag.StringVar(&fl.outputDir, "output-dir", ".output", "Директория, в которой должны храниться выходные файлы")
+	flag.Parse()
+
+	return fl
+}
+
 func main() {
 	fl := parseFlags()
 
@@ -58,10 +72,47 @@ func main() {
 				defer cancel()
 			}
 
-			filePath := path.Join(fl.outputDir, fmt.Sprintf("file-%d.yaml", i+1))
+			var (
+				filePath   = path.Join(fl.outputDir, fmt.Sprintf("file-%d.yaml", i+1))
+				fileExists = true
+			)
+
+			filePayload, err := os.ReadFile(filePath)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					slog.Error("не удалось получить информацию о файле", slog.Any("ошибка", err))
+					return
+				}
+
+				fileExists = false
+			}
 
 			for range fl.iterations {
-				writeFileRandomPayload(fileCtx, filePath)
+				select {
+				case <-fileCtx.Done():
+					slog.Warn("таймаут записи файла", slog.String("файл", filePath))
+					return
+				default:
+				}
+
+				if fileExists {
+					if err = updateFileRandomPayload(filePath, filePayload); err != nil {
+						slog.Error(
+							"не удалось обновить данные файла",
+							slog.Any("ошибка", err),
+							slog.String("файл", filePath),
+						)
+					}
+					continue
+				}
+
+				if err = writeFileRandomPayload(filePath); err != nil {
+					slog.Error(
+						"не удалось записать данные в файл",
+						slog.Any("ошибка", err),
+						slog.String("файл", filePath),
+					)
+				}
 			}
 		})
 	}
@@ -69,45 +120,40 @@ func main() {
 	slog.Info("Файлы успешно записаны")
 }
 
-func writeFileRandomPayload(ctx context.Context, filePath string) {
-	select {
-	case <-ctx.Done():
-		slog.Warn("таймаут записи файла", slog.String("файл", filePath))
-		return
-	default:
+func updateFileRandomPayload(filePath string, oldFilePayloadBytes []byte) error {
+	var oldFilePayload payload
+
+	if err := yaml.Unmarshal(oldFilePayloadBytes, &oldFilePayload); err != nil {
+		return fmt.Errorf("не удалось десериализовать данные файла: %w", err)
 	}
 
-	flePayload := generateRandomPayload()
+	freshFilePayload := generateRandomPayload()
+	freshFilePayload.Id = oldFilePayload.Id
+	freshFilePayload.CreatedAt = oldFilePayload.CreatedAt
 
-	data, err := yaml.Marshal(flePayload)
+	freshFilePayloadBytes, err := yaml.Marshal(freshFilePayload)
 	if err != nil {
-		slog.Error(
-			"не удалось сериализовать данные файла",
-			slog.Any("ошибка", err),
-			slog.String("файл", filePath),
-		)
-		return
+		return fmt.Errorf("не удалось сериализовать данные файла: %w", err)
+	}
+
+	if err = os.WriteFile(filePath, freshFilePayloadBytes, 0644); err != nil {
+		return fmt.Errorf("не удалось записать данные в файл: %w", err)
+	}
+
+	return nil
+}
+
+func writeFileRandomPayload(filePath string) error {
+	filePayload := generateRandomPayload()
+
+	data, err := yaml.Marshal(filePayload)
+	if err != nil {
+		return fmt.Errorf("не удалось сериализовать данные файла: %w", err)
 	}
 
 	if err = os.WriteFile(filePath, data, 0644); err != nil {
-		slog.Error(
-			"не удалось записать данные в файл",
-			slog.Any("ошибка", err),
-			slog.String("файл", filePath),
-		)
+		return fmt.Errorf("не удалось записать данные в файл: %w", err)
 	}
-}
 
-func parseFlags() flags {
-	var fl flags
-
-	flag.IntVar(&fl.concurrency, "concurrency", 10, "Количество потоков для конкурентной записи файлов")
-	flag.IntVar(&fl.files, "files", 10, "Количество файлов для записи")
-	flag.IntVar(&fl.iterations, "iterations", 1, "Количество итераций перезаписи каждого файла")
-	flag.DurationVar(&fl.fileTimeout, "file-timeout", -1, "Таймаут на перезапись отдельного файла")
-	flag.DurationVar(&fl.globalTimeout, "global-timeout", -1, "Таймаут на перезапись всех файлов")
-	flag.StringVar(&fl.outputDir, "output-dir", ".output", "Директория, в которой где должны храниться выходные файлы")
-	flag.Parse()
-
-	return fl
+	return nil
 }
