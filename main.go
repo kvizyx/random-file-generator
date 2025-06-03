@@ -106,9 +106,9 @@ func main() {
 					continue
 				}
 
-				if err = writeFileRandomPayload(filePath); err != nil {
+				if err = createFileRandomPayload(filePath); err != nil {
 					slog.Error(
-						"не удалось записать данные в файл",
+						"не удалось создать файл с данными",
 						slog.Any("ошибка", err),
 						slog.String("файл", filePath),
 					)
@@ -143,7 +143,7 @@ func updateFileRandomPayload(filePath string, oldFilePayloadBytes []byte) error 
 	return nil
 }
 
-func writeFileRandomPayload(filePath string) error {
+func createFileRandomPayload(filePath string) error {
 	filePayload := generateRandomPayload()
 
 	data, err := yaml.Marshal(filePayload)
